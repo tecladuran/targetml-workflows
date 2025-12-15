@@ -37,8 +37,8 @@ Tecla Duran Fort
 
 The loaded dataset contains the GCIMS intensity for Anisole and
 2-Heptanone in the **patient samples**. The correspondence between the
-clusters and the analytes can be checked at the $$Identification
-Report$$ (link)
+clusters and the analytes can be checked at the [Identification
+Report](https://github.com/tecladuran/targetml-workflows/blob/main/docs/measurements_tarragona/preprocessing/identification/identification_tgn_urine.md)
 
 | SampleID          | patient_id |   anisole | heptanone |
 |:------------------|-----------:|----------:|----------:|
