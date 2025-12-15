@@ -1,3 +1,8 @@
+VOC Identification in Tarragona Measurements
+================
+Tecla Duran Fort
+2025-12-15
+
 - <a href="#load-data" id="toc-load-data">Load Data</a>
 - <a href="#target-vocs" id="toc-target-vocs">Target VOCs</a>
 - <a href="#identification" id="toc-identification">Identification</a>
@@ -10,10 +15,8 @@
 
 ``` r
 library(openxlsx)
-source("../../../load_targetml_tools.R")
+library(dplyr)
 ```
-
-    ## here() starts at /storage/users/tduran/Projects/targetml-gcims-tools
 
     ## 
     ## Attaching package: 'dplyr'
@@ -26,49 +29,35 @@ source("../../../load_targetml_tools.R")
     ## 
     ##     intersect, setdiff, setequal, union
 
-    ## >>> loading tools...
-    ## [1] "/storage/users/tduran/Projects/targetml-gcims-tools/R/baseline_exploratory.R"
-    ## [2] "/storage/users/tduran/Projects/targetml-gcims-tools/R/baseline.R"            
-    ## [3] "/storage/users/tduran/Projects/targetml-gcims-tools/R/cal_curves.R"          
-    ## [4] "/storage/users/tduran/Projects/targetml-gcims-tools/R/optimize_alignment.R"  
-    ## [5] "/storage/users/tduran/Projects/targetml-gcims-tools/R/quantification.R"      
-    ## [6] "/storage/users/tduran/Projects/targetml-gcims-tools/R/utils_gcims.R"         
-    ## [7] "/storage/users/tduran/Projects/targetml-gcims-tools/R/utils_tdf.R"           
-    ## [8] "/storage/users/tduran/Projects/targetml-gcims-tools/R/voc_identification.R"  
-    ## → Sourcing: /storage/users/tduran/Projects/targetml-gcims-tools/R/baseline_exploratory.R 
-    ## → Sourcing: /storage/users/tduran/Projects/targetml-gcims-tools/R/baseline.R 
-    ## → Sourcing: /storage/users/tduran/Projects/targetml-gcims-tools/R/cal_curves.R 
-    ## → Sourcing: /storage/users/tduran/Projects/targetml-gcims-tools/R/optimize_alignment.R 
-    ## → Sourcing: /storage/users/tduran/Projects/targetml-gcims-tools/R/quantification.R 
-    ## → Sourcing: /storage/users/tduran/Projects/targetml-gcims-tools/R/utils_gcims.R
-
-    ## 
-    ## Attaching package: 'gridExtra'
-
-    ## The following object is masked from 'package:dplyr':
-    ## 
-    ##     combine
-
-    ## → Sourcing: /storage/users/tduran/Projects/targetml-gcims-tools/R/utils_tdf.R
-
-    ## 
-    ## Attaching package: 'patchwork'
-
-    ## The following object is masked from 'package:cowplot':
-    ## 
-    ##     align_plots
-
-    ## → Sourcing: /storage/users/tduran/Projects/targetml-gcims-tools/R/voc_identification.R
-
 ``` r
-library(dplyr)
 library(reshape2)
 library(ggplot2)
+library(rprojroot)
+knitr::opts_knit$set(root.dir = rprojroot::find_root(rprojroot::is_git_root))
+source("../../../../load_tools.R")
 ```
+
+    ## here() starts at /storage/users/tduran/Projects/targetml-workflows
+
+    ## >>> loading tools...
+    ## [1] "/storage/users/tduran/Projects/targetml-workflows/R/baseline.R"          
+    ## [2] "/storage/users/tduran/Projects/targetml-workflows/R/ML_PAR.R"            
+    ## [3] "/storage/users/tduran/Projects/targetml-workflows/R/quantification.R"    
+    ## [4] "/storage/users/tduran/Projects/targetml-workflows/R/setup.R"             
+    ## [5] "/storage/users/tduran/Projects/targetml-workflows/R/utils_gcims.R"       
+    ## [6] "/storage/users/tduran/Projects/targetml-workflows/R/utils.R"             
+    ## [7] "/storage/users/tduran/Projects/targetml-workflows/R/voc_identification.R"
+    ## → Sourcing: /storage/users/tduran/Projects/targetml-workflows/R/baseline.R 
+    ## → Sourcing: /storage/users/tduran/Projects/targetml-workflows/R/ML_PAR.R 
+    ## → Sourcing: /storage/users/tduran/Projects/targetml-workflows/R/quantification.R 
+    ## → Sourcing: /storage/users/tduran/Projects/targetml-workflows/R/setup.R 
+    ## → Sourcing: /storage/users/tduran/Projects/targetml-workflows/R/utils_gcims.R 
+    ## → Sourcing: /storage/users/tduran/Projects/targetml-workflows/R/utils.R 
+    ## → Sourcing: /storage/users/tduran/Projects/targetml-workflows/R/voc_identification.R
 
 ## Load Data
 
-    ## Results: /storage/users/tduran/Projects/targetml-gcims-tools/data/tgn_results/measurements/urine/results_2025-07-02_13-22
+    ## Results: data/raw/tgn_results_gcims/urine/results_2025-12-15_11-05
 
 ## Target VOCs
 
@@ -114,9 +103,6 @@ relevant_clusters
 ## Relevant Peak Tables
 
 ## Plot
-
-    ## Warning: Removed 14 rows containing non-finite outside the scale range
-    ## (`stat_boxplot()`).
 
 ![](identification_tgn_urine_files/figure-gfm/plot-vocs-1.png)<!-- -->
 

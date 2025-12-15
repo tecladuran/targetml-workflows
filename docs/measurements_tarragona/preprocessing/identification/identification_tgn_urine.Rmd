@@ -3,10 +3,15 @@ title: 'VOC Identification in Tarragona Measurements'
 author: "Tecla Duran Fort"
 date: "`r Sys.Date()`"
 output:
+  github_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: no    
   html_document:
     toc: yes
     toc_depth: 3
-    number_sections: no
+    number_sections: yes
+always_allow_html: true
 ---
 
 ```{r setup}

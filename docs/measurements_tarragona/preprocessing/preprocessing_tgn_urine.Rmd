@@ -3,14 +3,14 @@ title: 'Tarragona Urine Measurements Preprocessing'
 author: "Tecla Duran Fort"
 date: "`r Sys.Date()`"
 output:
-  github_document:
-    toc: yes
-    toc_depth: 3
-    number_sections: no    
   html_document:
     toc: yes
     toc_depth: 3
     number_sections: yes
+  github_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: no    
 always_allow_html: true
 ---
 
