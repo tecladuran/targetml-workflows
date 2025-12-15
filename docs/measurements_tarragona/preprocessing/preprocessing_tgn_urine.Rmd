@@ -1,0 +1,288 @@
+---
+title: 'Tarragona Urine Measurements Preprocessing'
+author: "Tecla Duran Fort"
+date: "`r Sys.Date()`"
+output:
+  github_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: no    
+  html_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+always_allow_html: true
+---
+
+# Set Up
+
+```{r setup, message=FALSE, warning=FALSE}
+start_time <- Sys.time()
+library(BiocParallel)
+library(ggplot2)
+library(GCIMS)
+library(dplyr)
+library(openxlsx)
+library(htmlwidgets)
+library(rprojroot)
+knitr::opts_knit$set(root.dir = rprojroot::find_root(rprojroot::is_git_root))
+source("../../../load_tools.R")
+```
+
+
+```{r paralel, include=FALSE}
+# enable parallellization
+setup_parallelisation()
+```
+
+
+**Result Storage**
+
+All results are automatically saved in a folder named with the current date and time, following the pattern `results_<YYYY-MM-DD_HH-MM>`. 
+
+```{r results-directory, echo=FALSE}
+# Prepare output directory with timestamp
+timestamp <- format(
+  as.POSIXct(Sys.time(), tz = "Europe/Madrid"),
+  "%Y-%m-%d_%H-%M"
+)
+
+base_folder <- file.path(
+  "data",
+  "raw",
+  "tgn_results_gcims", 
+  "urine",
+  paste0("results_", timestamp)
+)
+
+dir.create(base_folder, recursive = TRUE, showWarnings = FALSE)
+
+cat("The results will be saved in the folder:", base_folder, "\n")
+cat("Results Folder:", timestamp, "\n")
+
+```
+
+```{r annotations-file, echo=FALSE}
+# Create annotations df
+annotations <- read.csv(
+  file.path(
+    "data",
+    "additional_files",
+    "tgn_additional_files",
+    "annotations_patient_measurements_tgn.csv"
+  )
+)
+annotations <- annotations %>% filter(class != "blank") %>% filter(class != "M1")%>%filter(matrix != "SU") # QUITAR FILAS BLANK, m1, SU
+annotations
+```
+
+
+## 1) Dataset creation
+
+```{r dataset-creation, echo=TRUE}
+samples_directory <- "/storage/projects/TargetML/tgn/all_samples"
+FileName <- sort(list.files(samples_directory, full.names = FALSE))
+
+# Create GCIMS dataset object
+urine <- GCIMSDataset$new(
+  annotations,
+  base_dir = samples_directory,
+  on_ram = FALSE
+)
+urine
+```
+
+---
+
+## 2) Pre-process
+
+```{r preprocess, echo=TRUE}
+# 1) Filter (only in Dt)
+filterDt(urine, dt = c(5, 20)) # in ms
+
+# 2) Smooth
+smooth(urine, rt_length_s = 3, dt_length_ms = 0.14)
+
+# 3) Decimate
+decimate(urine, rt_factor = 1, dt_factor = 2)
+```
+
+---
+
+## Visualisation of some samples
+
+```{r plots-tgn-pool, echo=FALSE}
+for (i in 1:5){
+  plot_sample(urine$getSample(i), colormap)
+}
+```
+
+---
+
+## 3) Pre-alignment
+
+```{r prealignment, echo=TRUE}
+reference <- 15
+align(urine, reference_sample_idx = reference, align_dt = TRUE, align_ip = TRUE, method_rt = "none")
+urine$realize()
+
+align(urine, reference_sample_idx = reference, align_dt = FALSE, align_ip = FALSE, method_rt = "ptw", ploynomial_order = 2)
+urine$realize()
+
+filterDt(urine, dt_range = c(min(dtime(urine)), max(dtime(urine))))
+filterRt(urine, rt_range = c(min(rtime(urine)), max(rtime(urine))))
+
+plot_interactive(plotRIC(urine) + guides(colour = "none"))
+```
+```{r}
+plot_interactive(plotTIS(urine)+guides(colour="none"))
+```
+
+---
+
+## 4) Alignment
+
+```{r alignment, echo=FALSE}
+#GCIMS::align_new_method(object = urine, reference = 9, percentage_movement = 0.2)
+#plot_interactive(plotRIC(urine)+guides(colour="none"))
+```
+
+
+---
+
+## 5) findPeaks()
+
+```{r findPeaks, include=FALSE}
+findPeaks(
+  urine,
+  rt_length_s = 3,
+  dt_length_ms = 0.14,
+  verbose = TRUE,
+  dt_peakwidth_range_ms = c(0.15, 0.4),
+  rt_peakwidth_range_s = c(10, 25),
+  dt_peakDetectionCWTParams = list(exclude0scaleAmpThresh = TRUE),
+  rt_peakDetectionCWTParams = list(exclude0scaleAmpThresh = TRUE),
+  dt_extension_factor = 0,
+  rt_extension_factor = 0,
+  exclude_rip = TRUE,
+  iou_overlap_threshold = 0.2
+)
+
+peak_list <- peaks(urine)
+```
+
+---
+
+## 6) clusterPeaks()
+
+```{r clustering-section, echo=TRUE}
+peak_clustering <- clusterPeaks(
+  peak_list,
+  distance_method = "euclidean",
+  dt_cluster_spread_ms = 0.1,
+  rt_cluster_spread_s = 20,
+  clustering = list(method = "hclust")
+)
+
+peak_list_clustered <- peak_clustering$peak_list_clustered
+```
+
+---
+
+### Cluster Interactive Visualisation
+
+```{r plot-clustered-peaks, echo=FALSE}
+plt <- plot(urine$getSample(1)) +
+  overlay_peaklist(dplyr::filter(peak_list_clustered, !is.na(cluster)), color_by = "cluster")
+plot_interactive(plt)
+saveWidget(plot_interactive(plt), file = file.path(base_folder, "cluster_plot_interactive.html"))
+```
+
+
+
+
+---
+
+## 7) integratePeaks()
+
+```{r integrate-peaks, echo=TRUE}
+integratePeaks(
+  urine, 
+  peak_clustering$peak_list, 
+  integration_size_method = "fixed_size", 
+  rip_saturation_threshold = 0.1
+)
+
+peak_list <- peaks(urine)
+```
+
+---
+
+## 8) peakTable()
+
+```{r peak-table, echo=TRUE}
+peak_table <- peakTable(peak_list, aggregate_conflicting_peaks = max)
+
+# Impute missing values
+peak_table_imputed <- imputePeakTable(
+  peak_table$peak_table_matrix,
+  urine, 
+  peak_clustering$cluster_stats
+)
+```
+
+---
+
+## 9) Baseline Correction
+
+[Click here to view the Baseline Correction Report](https://github.com/tecladuran/gcims-workflows/blob/0f4be88606cd5b4de16762ad607b64fd4612b020/docs/baseline_correction.purine)
+
+```{r correcting-baseline, echo=TRUE}
+cluster_stats <- peak_clustering$cluster_stats
+
+peak_table_corrected <- correctBaseline(
+  urine, 
+  peak_list, 
+  cluster_stats, 
+  ampliation = 200
+)
+```
+
+
+
+---
+
+## 10) Saving all results
+
+```{r saving-results, echo=FALSE}
+# Create output folder structure
+all_results_folder <- file.path(base_folder, "all_results")
+dir.create(all_results_folder, recursive = TRUE, showWarnings = FALSE)
+
+# Save cluster stats
+write.csv(cluster_stats, file.path(all_results_folder, "cluster_stats_tgn.csv"), row.names = FALSE)
+write.xlsx(cluster_stats, file.path(all_results_folder, "cluster_stats_tgn.xlsx"))
+
+# Prepare and save imputed peak table
+peak_table_imputed <- as.data.frame(peak_table_imputed) %>%
+  mutate(SampleID = rownames(.)) %>%
+  left_join(annotations, by = "SampleID") %>%
+  select(SampleID, class, matrix, patient_id, patient_condition, control_level, day, everything(), -FileName)
+
+write.csv(peak_table_imputed, file.path(all_results_folder, "peak_table_imputed_tgn.csv"), row.names = FALSE)
+write.xlsx(peak_table_imputed, file.path(all_results_folder, "peak_table_imputed_tgn.xlsx"))
+
+# Prepare and save corrected peak table
+peak_table_corrected <- as.data.frame(peak_table_corrected) %>%
+  mutate(SampleID = rownames(.)) %>%
+  left_join(annotations, by = "SampleID") %>%
+  select(SampleID, class, matrix, patient_id, patient_condition, control_level, day, everything(), -FileName)
+
+write.csv(peak_table_corrected, file.path(all_results_folder, "peak_table_corrected_tgn.csv"), row.names = FALSE)
+write.xlsx(peak_table_corrected, file.path(all_results_folder, "peak_table_corrected_tgn.xlsx"))
+
+```
+
+
+
+
