@@ -1,0 +1,235 @@
+---
+title: "Cluster Filtering in Peak Table"
+subtitle: "Based on Representation Across Samples and Stability Across Quality Control Samples"
+author: "Tecla Duran Fort"
+date: "`r Sys.Date()`"
+output:
+  github_document:
+    toc: true
+    toc_depth: 3
+    number_sections: no
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: no
+  html_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(rprojroot)
+library(BiocParallel)
+knitr::opts_knit$set(root.dir = rprojroot::find_root(rprojroot::is_git_root))
+source("../../load_tools.R")
+
+```
+
+```{r}
+root_folder <- "data/raw/tgn_results_gcims/urine"
+folders <- list.dirs(root_folder, full.names = TRUE, recursive = FALSE)
+results_folders <- folders[grepl("results_\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}", folders)]
+latest_folder <- sort(results_folders, decreasing = TRUE)[1]
+```
+
+# Load Data
+
+```{r, echo=FALSE}
+cat("Data from:", latest_folder)
+
+data <- read.csv(file.path(latest_folder, "all_results/peak_table_corrected_tgn.csv"))
+
+peak_table_duplicity <- read_csv(file.path(latest_folder,"peak_table_duplicity.csv"))
+
+
+patient_data<-data%>%filter(matrix=="urine")%>%dplyr::select(-matrix,-control_level,-day)
+
+qcs<-data%>%filter(matrix=="pool")%>%dplyr::select(-matrix,-patient_id, -patient_condition)
+
+```
+# 1. Filter By Representation Across Samples
+
+```{r representation}
+# Convert to long format
+dup_long <- peak_table_duplicity %>%
+  pivot_longer(-cluster, names_to = "SampleID", values_to = "Presence") %>%
+  mutate(Presence = ifelse(is.na(Presence), 0, 1))
+
+# Representation ratio per cluster
+representation_df <- dup_long %>%
+  group_by(cluster) %>%
+  summarise(
+    n_present = sum(Presence),
+    total_samples = n(),
+    representation_ratio = n_present / total_samples,
+    .groups = "drop"
+  )
+```
+
+## Defining a threshold (20%)
+
+```{r rare-clusters, echo=TRUE}
+rare_clusters <- representation_df %>%
+  filter(representation_ratio < 0.2) %>%
+  pull(cluster)
+```
+
+```{r, echo=FALSE}
+
+cat("Number of rare clusters:", length(rare_clusters), "\n")
+```
+
+
+## Exclude them drom the datasets
+
+```{r, echo=TRUE}
+data_filtered <- data %>%
+  select(-any_of(rare_clusters))
+
+peak_table_duplicity_filtered <- peak_table_duplicity %>%
+  select(-any_of(rare_clusters))
+
+patient_data_filtered <- patient_data %>%
+  select(-any_of(rare_clusters))
+
+qcs_filtered <- qcs %>%
+  select(-any_of(rare_clusters))
+```
+
+
+# 2. Filter By QC Stability
+
+## Exclude target analytes
+
+Some analytes (anisole, 2-pentanone, 2-heptanone — monomer and dimer forms) were intentionally added to the QC samples as targets.
+They are excluded from the stability analysis since they are not supposed to stay constant across QC levels.
+
+```{r, fig.width=3, fig.height=2}
+# Clusters to exclude (they are altered across the levels of qc)
+excluded_clusters <- c(3, 155, 310, 39, 236)
+excluded_names <- paste0("Cluster", excluded_clusters)
+
+# Plot Intensities across levels
+qcs_filtered$control_level <- factor(qcs_filtered$control_level,
+                           levels = c("LLQC", "LQC", "MQC", "HQC"),
+                           ordered = TRUE)
+
+excluded_long <- qcs_filtered %>%
+  pivot_longer(cols = starts_with("Cluster"),
+               names_to = "Cluster",
+               values_to = "Intensity") %>%
+  filter(Cluster %in% excluded_names)
+
+for (cl in excluded_names) {
+  
+  df_plot <- excluded_long %>% filter(Cluster == cl)
+  
+  p <- ggplot(df_plot, aes(x = control_level, y = Intensity, color = control_level)) +
+    geom_point(size = 3, alpha = 0.8) +
+    scale_color_manual(values = c("#2166AC", "#4393C3", "#92C5DE", "#D1E5F0")) +
+    labs(
+      title = paste0("Intensity by QC level — ", cl),
+      x = "QC level",
+      y = "Intensity"
+    ) +
+    theme_minimal(base_size = 9) +
+    theme(legend.position = "none")
+  
+  print(p) 
+}
+
+```
+
+## Distribution of RSD Values
+
+```{r, echo=TRUE}
+rsd_qc <- qcs_filtered %>%
+  pivot_longer(cols = starts_with("Cluster"), names_to = "Cluster", values_to = "Intensity") %>%
+  filter(!Cluster %in% excluded_names) %>% 
+  group_by(Cluster) %>%
+  summarise(
+    mean_int = mean(Intensity, na.rm = TRUE),
+    sd_int = sd(Intensity, na.rm = TRUE),
+    rsd = (sd_int / mean_int) * 100,
+    .groups = "drop"
+  )
+```
+
+```{r, echo=FALSE}
+ggplot(rsd_qc, aes(x = rsd)) +
+  geom_histogram(bins = 30, fill = "navy", color = "white", alpha = 0.8) +
+  geom_vline(xintercept = 25, color = "red", linetype = "dashed", linewidth = 1) +
+  labs(
+    title = "RSD distribution",
+    x = "RSD (%)",
+    y = "Count"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+
+
+## Filter clusters with RSD > 25 in QC
+
+Clusters with RSD above 30% in the QC samples are considered unstable and removed from further analysis.
+
+```{r, echo=TRUE}
+high_rsd_clusters <- rsd_qc %>%
+  filter(rsd > 25) %>%
+  pull(Cluster)
+```
+
+
+# List of excluded clusters
+
+```{r, echo=TRUE}
+excluded_total <- unique(c(rare_clusters, high_rsd_clusters))
+```
+
+```{r, echo=FALSE}
+path_1 <- file.path(latest_folder, "excluded_clusters.txt")
+path_2 <- file.path("/storage/users/tduran/Projects/targetml-gcims-tools/data/peak_tables_targetml/excluded_clusters.txt")
+writeLines(excluded_total, path_1)
+writeLines(excluded_total, path_2)
+
+cat("Summary of cluster exclusions:\n")
+cat(" - Due to low representation (<20%):", length(rare_clusters), "\n")
+cat(" - Due to high RSD in QC (>25%):", length(high_rsd_clusters), "\n")
+```
+
+# Save Filtered Peak Table
+
+```{r}
+# FILTER TABLES
+data_filtered <- data %>%
+  select(-any_of(excluded_total))
+
+patient_data_filtered <- patient_data %>%
+  select(-any_of(excluded_total))
+
+# SAVE CSV
+output_dir <- "data/tables/tgn_gcims"
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+write.csv(
+  data_filtered,
+  file.path(output_dir, "peak_table_filtered_all_samples.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  patient_data_filtered,
+  file.path(output_dir, "peak_table_filtered_patients.csv"),
+  row.names = FALSE
+)
+
+
+
+```
+

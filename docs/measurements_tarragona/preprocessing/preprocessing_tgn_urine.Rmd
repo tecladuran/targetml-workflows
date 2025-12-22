@@ -26,13 +26,13 @@ library(openxlsx)
 library(htmlwidgets)
 library(rprojroot)
 knitr::opts_knit$set(root.dir = rprojroot::find_root(rprojroot::is_git_root))
-source("../../../load_tools.R")
+source("../../../load_tools.R")  
 ```
 
 
 ```{r paralel, include=FALSE}
 # enable parallellization
-setup_parallelisation()
+register(SnowParam(workers = parallel::detectCores()/2, progressbar = show_progress_bar(), exportglobals = FALSE), default = TRUE)
 ```
 
 
@@ -281,6 +281,10 @@ peak_table_corrected <- as.data.frame(peak_table_corrected) %>%
 write.csv(peak_table_corrected, file.path(all_results_folder, "peak_table_corrected_tgn.csv"), row.names = FALSE)
 write.xlsx(peak_table_corrected, file.path(all_results_folder, "peak_table_corrected_tgn.xlsx"))
 
+
+# Save duplicity
+
+write.csv(peak_table$peak_table_duplicity, file.path(base_folder, "peak_table_duplicity.csv"), row.names = FALSE)
 ```
 
 

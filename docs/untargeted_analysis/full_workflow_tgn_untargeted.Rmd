@@ -1,0 +1,441 @@
+---
+title: "Full Untargeted Analysis of Tarragona Samples"
+subtitle: "PLS-DA model with GC-IMS Data"
+author: "Tecla Duran Fort"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+  github_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+  html_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+---
+
+# Set Up 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(ggplot2)
+library(pls)
+library(plsVarSel)
+library(dplyr)
+library(pROC)
+library(tidyverse)
+library(purrr)
+library(rprojroot)
+knitr::opts_knit$set(root.dir = rprojroot::find_root(rprojroot::is_git_root))
+source("../../load_tools.R")
+```
+
+```{r, echo=FALSE}
+# PARALLELISATION 
+
+library(BiocParallel)
+
+# Detecta nombre total de cores disponibles
+n_total <- parallel::detectCores()
+
+# Deixa 4 cores lliures per seguretat
+n_workers <- max(1, n_total - 4)
+
+message("Detected cores: ", n_total)
+message("Using workers:  ", n_workers)
+
+# Linux/macOS → Multicore
+if (.Platform$OS.type == "unix") {
+    param <- MulticoreParam(workers = n_workers)
+} else {
+    # Windows → Snow
+    param <- SnowParam(workers = n_workers, type = "SOCK")
+}
+
+register(param)
+
+```
+
+\newpage
+
+# Load Data
+
+## Loading Full GCIMS Peak table 
+
+The loaded dataset contains only the **patient samples** and has already been [filtered based on cluster representation and RSD]()
+
+
+```{r}
+data <- read_csv("data/tables/tgn_gcims/peak_table_filtered_patients.csv")
+creatinine<- read_csv("data/tables/tgn/creatinine.csv") 
+cluster_cols <- grep("^Cluster", names(data), value = TRUE)
+```
+
+# Preprocessing
+
+
+## Creatinine Normalisation
+
+```{r}
+creatinine <- creatinine %>%
+  slice(1:(n() - 2)) %>%          # (two last not corresponding to patients)
+  mutate(ID = as.numeric(ID))%>%
+  rename(Creatinine = Creatinine_mg_dl)
+
+# Join by patient_id
+df <- data %>%
+  left_join(creatinine, by = c("patient_id" = "ID"))
+```
+
+```{r}
+# Normalise cluster intensities by creatinine
+df_creatinine_norm <- df %>%
+  mutate(across(all_of(cluster_cols), ~ .x / Creatinine))
+```
+
+## Log Transformation 
+
+```{r, echo=TRUE}
+# ---- LOG-TRANSFORM ----
+data_log <- df_creatinine_norm
+data_log[cluster_cols] <- log1p(data_log[cluster_cols])
+
+```
+
+
+
+## Check of Preprocessing (Normality)
+
+
+```{r, echo=FALSE}
+conditions <- unique(data$patient_condition)
+
+# Function to check normality (Shapiro)
+check_normal <- function(x) {
+  x <- x[!is.na(x)]
+  if (length(x) < 3) return(NA)
+  shapiro.test(x)$p.value
+}
+
+# ---- NORMALITY IN RAW DATA ----
+p_before <- purrr::map(cluster_cols, function(cl) {
+  purrr::map_dbl(conditions, function(cond) {
+    vals <- data[data$patient_condition == cond, cl, drop = TRUE]
+    check_normal(vals)
+  })
+}) %>% unlist()
+
+normal_before <- mean(p_before > 0.05, na.rm = TRUE) * 100
+
+# ---- NORMALITY AFTER Creatinine ----
+p_after_creat <- purrr::map(cluster_cols, function(cl) {
+  map_dbl(conditions, function(cond) {
+    vals <- df_creatinine_norm[df_creatinine_norm$patient_condition == cond, cl, drop = TRUE]
+    check_normal(vals)
+  })
+}) %>% unlist()
+
+normal_after_creat <- mean(p_after_creat > 0.05, na.rm = TRUE) * 100
+
+
+# ---- NORMALITY AFTER LOG ----
+p_after_log <- purrr::map(cluster_cols, function(cl) {
+  purrr::map_dbl(conditions, function(cond) {
+    vals <- data_log[data_log$patient_condition == cond, cl, drop = TRUE]
+    check_normal(vals)
+  })
+}) %>% unlist()
+
+normal_after_log <- mean(p_after_log > 0.05, na.rm = TRUE) * 100
+
+
+
+# ---- SUMMARY OUTPUT ----
+cat("Normality (Shapiro p > 0.05), computed separately per condition:\n")
+cat(sprintf("  • Raw data: %.1f%% of cases approximately normal\n", normal_before))
+cat(sprintf("  • After Creatinine Normalisation:  %.1f%% of cases approximately normal\n",  normal_after_creat))
+cat(sprintf("  • After log-transform:  %.1f%% of cases approximately normal\n",  normal_after_log))
+
+```
+
+
+
+```{r, fig.height=3, fig.width=10}
+## Evolution of 10 random clusters: histogram + density (count), 3 subplots per cluster
+
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(patchwork)
+
+# Pick 10 clusters
+set.seed(123)
+clusters_sampled <- sample(cluster_cols, 10)
+
+# Colors
+cond_cols <- c("CTRL" = "steelblue", "CRC" = "firebrick")
+
+# Function to build one subplot (RAW or LOG or CREAT)
+make_panel <- function(df, cl, title_suffix) {
+  ggplot(df, aes(x = .data[[cl]], fill = patient_condition)) +
+    geom_histogram(alpha = 0.5, bins = 10, position = "identity") +
+    geom_freqpoly(aes(color = patient_condition), bins = 10, size = 1)+
+    scale_fill_manual(values = cond_cols) +
+    scale_color_manual(values = cond_cols) +
+    theme_minimal(base_size = 12) +
+    theme(legend.position = "none") +
+    labs(title = title_suffix, x = NULL, y = "Count")
+}
+
+# Build all cluster evolution plots
+evolution_plots <- lapply(clusters_sampled, function(cl){
+
+  p_raw  <- make_panel(data, cl,        "Raw")
+  p_crea <- make_panel(df_creatinine_norm, cl, "Creatinine")
+  p_log  <- make_panel(data_log, cl,    "Log")
+
+  # 3 panels in a row
+  (p_raw | p_log | p_crea) +
+    plot_annotation(title = paste("Cluster:", cl))
+})
+
+# Show all
+evolution_plots
+
+
+
+```
+
+
+# Exploratory Analysis
+
+
+```{r}
+# Simple PCA score plot function
+plot_pca <- function(data, labels, levels, colors) {
+  
+  # Select only cluster columns (numerical features)
+  features <- data[, grepl("^Cluster", colnames(data))]
+  
+  # Run PCA
+  pca_res <- prcomp(features, scale. = TRUE)
+  
+  # Build score dataframe
+  scores <- as.data.frame(pca_res$x[, 1:2])   # PC1 + PC2
+  scores$label <- factor(labels, levels = levels)
+  
+  # Simple shapes for the two groups
+  shapes <- c(16, 17)   # circle, triangle
+  
+  # Score plot
+  ggplot(scores, aes(PC1, PC2, color = label, shape = label)) +
+    geom_point(size = 3, alpha = 0.8) +
+    scale_color_manual(values = colors) +
+    scale_shape_manual(values = shapes) +
+    theme_minimal(base_size = 14) +
+    labs(title = "PCA Score Plot", x = "PC1", y = "PC2")
+}
+
+```
+
+```{r}
+group_labels <- df_creatinine_norm$patient_condition
+group_levels <- c("CTRL", "CRC")
+group_colors <- c("CTRL" = "#337B9F", "CRC" = "#C83342")
+
+p <- plot_pca(data_log, group_labels, group_levels, group_colors)
+
+print(p)
+```
+
+# Classification Performance
+
+## Functions Definition
+
+### Make Stratified Folds
+
+```{r}
+make_folds <- function(..., k) {
+  set.seed(1)
+  folds <- vector("list", k)
+  
+  # Capture all input variables as a data frame
+  vars <- list(...)
+  if (length(vars) == 0) stop("You must provide at least one variable for stratification.")
+  
+  # Combine all variables into one data frame
+  df <- as.data.frame(vars)
+  
+  # Create stratification factor (interaction between all variables)
+  strata <- interaction(df, drop = TRUE)
+  
+  # Create folds maintaining proportional representation of each stratum
+  for (lvl in levels(strata)) {
+    idx <- which(strata == lvl)
+    idx <- sample(idx)
+    split_idx <- cut(seq_along(idx), breaks = k, labels = FALSE)
+    for (i in 1:k) {
+      folds[[i]] <- c(folds[[i]], idx[split_idx == i])
+    }
+  }
+  
+  return(folds)
+}
+```
+
+### Nested Cross Validation
+```{r}
+rf_nested_cv <- function(X, y, positive_class, negative_class,
+                         outer_folds = 5, inner_folds = 4,
+                         ntree = 500, mtry_grid = c(2, 4, 6),
+                         strat_vars = NULL,
+                         workers_outer = max(1, parallel::detectCores() - 2),
+                         workers_inner = max(1, parallel::detectCores() - 2)) {
+  
+  library(randomForest)
+  library(BiocParallel)
+  
+  # Paral·lelització outer folds
+  bp_outer <- MulticoreParam(workers = workers_outer, progressbar = TRUE)
+  
+  # Paral·lelització inner folds
+  bp_inner <- MulticoreParam(workers = workers_inner, progressbar = FALSE)
+  
+  y <- factor(y, levels = c(negative_class, positive_class))
+  
+  # --- Càlcul dels outer folds (seqüencial per obtenir indices) ---
+  if (is.null(strat_vars)) {
+    outer_folds_idx <- make_folds(y, k = outer_folds)
+  } else {
+    outer_folds_idx <- do.call(make_folds, c(list(y), strat_vars, k = outer_folds))
+  }
+  
+  # --- LOOP OUTER EN PARA·LEL ---
+  outer_results <- bplapply(seq_along(outer_folds_idx), function(o) {
+    
+    test_id <- outer_folds_idx[[o]]
+    train_id <- setdiff(seq_along(y), test_id)
+    
+    X_train <- X[train_id, , drop = FALSE]
+    y_train <- y[train_id]
+    X_test  <- X[test_id, , drop = FALSE]
+    y_test  <- y[test_id]
+    
+    # --- Inner folds per tuning ---
+    if (is.null(strat_vars)) {
+      inner_folds_idx <- make_folds(y_train, k = inner_folds)
+    } else {
+      strat_train <- lapply(strat_vars, function(v) v[train_id])
+      inner_folds_idx <- do.call(make_folds, c(list(y_train), strat_train, k = inner_folds))
+    }
+    
+    inner_acc <- numeric(length(mtry_grid))
+    
+    # Per cada mtry, paral·lelitzar els inner folds
+    for (m in seq_along(mtry_grid)) {
+      
+      acc_list <- bplapply(seq_along(inner_folds_idx), function(f) {
+        
+        inner_test <- inner_folds_idx[[f]]
+        inner_train <- setdiff(seq_along(y_train), inner_test)
+        
+        rf_inner <- randomForest(
+          x = X_train[inner_train, , drop = FALSE],
+          y = factor(y_train[inner_train], levels = c(negative_class, positive_class)),
+          ntree = ntree,
+          mtry = mtry_grid[m]
+        )
+        
+        pred_inner <- predict(rf_inner, newdata = X_train[inner_test, , drop = FALSE])
+        mean(pred_inner == y_train[inner_test])
+        
+      }, BPPARAM = bp_inner)
+      
+      inner_acc[m] <- mean(unlist(acc_list))
+    }
+    
+    best_mtry <- mtry_grid[which.max(inner_acc)]
+    
+    # --- Model final ---
+    rf_final <- randomForest(
+      x = X_train,
+      y = y_train,
+      ntree = ntree,
+      mtry = best_mtry,
+      importance = TRUE
+    )
+    
+    prob_mat <- predict(rf_final, newdata = X_test, type = "prob")
+    pred_prob <- prob_mat[, positive_class]
+    pred_class <- ifelse(pred_prob > 0.5, 1, 0)
+    true_class <- ifelse(y_test == positive_class, 1, 0)
+    
+    list(
+      results = list(
+        best_mtry = best_mtry,
+        inner_acc = inner_acc,
+        model = rf_final
+      ),
+      preds = data.frame(
+        SampleIndex = test_id,
+        TrueLabel = true_class,
+        PredProb = pred_prob,
+        PredClass = pred_class
+      )
+    )
+    
+  }, BPPARAM = bp_outer)
+  
+  # --- Combinar resultats ---
+  results_list <- lapply(outer_results, `[[`, "results")
+  preds_all <- do.call(rbind, lapply(outer_results, `[[`, "preds"))
+  
+  overall_acc <- mean(preds_all$TrueLabel == preds_all$PredClass)
+  
+  list(
+    results = results_list,
+    predictions = preds_all,
+    overall_accuracy = overall_acc
+  )
+}
+
+```
+
+## Evaluation
+
+
+```{r}
+# Predictor matrix
+X <- data_log[, cluster_cols] %>% as.matrix()
+
+# Response variable
+y <- data_log$patient_condition
+
+```
+
+
+```{r}
+set.seed(123)
+
+rf_res <- rf_nested_cv(
+  X = X,
+  y = y,
+  positive_class = "CRC",
+  negative_class = "CTRL",
+  outer_folds = 7,
+  inner_folds = 6,
+  ntree = 500,
+  mtry_grid = c(2, 4, 6),
+  strat_vars = NULL    
+)
+```
+
+```{r}
+show_results(rf_res, title = "Random Forest Nested CV — GC-IMS Classification")
+
+```
+
