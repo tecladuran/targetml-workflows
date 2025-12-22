@@ -117,6 +117,12 @@ data_gcims_concentration <- data_gcims_concentration %>%
 knitr::kable(head(data_gcims_concentration))
 ```
 
+```{r, echo=FALSE}
+saveRDS(
+  data_gcims_concentration,
+  file = file.path("data/additional_objects", "data_gcims_concentration.rds")
+)
+```
 
 
 ## TGN Data Imputation
@@ -159,8 +165,13 @@ data_tgn_imputed <- data_tgn %>%
   select(patient_id, compound, intensity) %>%
   pivot_wider(names_from = compound, values_from = intensity)
 
-
 knitr::kable(head(data_tgn_imputed))
+```
+```{r, echo=FALSE}
+saveRDS(
+  data_tgn_imputed,
+  file = file.path("data/additional_objects", "data_tgn_imputed.rds")
+)
 ```
 
 
@@ -168,8 +179,22 @@ knitr::kable(head(data_tgn_imputed))
 
 ```{r}
 data <- data_gcims_concentration%>% left_join(data_tgn_imputed, by="patient_id")
-
 knitr::kable(head(data))
+```
+```{r, echo=FALSE}
+# SAVE RDS
+data_targeted <- data %>%
+  left_join(
+    metadata %>% dplyr::select(condition, patient_id),
+    by = "patient_id"
+  ) %>%
+  dplyr::rename(patient_condition = condition) %>%
+  dplyr::relocate(patient_condition, .after = patient_id)
+
+saveRDS(
+  data_targeted,
+  file = file.path("data/additional_objects", "targeted_data.rds")
+)
 ```
 
 

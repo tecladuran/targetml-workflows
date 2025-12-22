@@ -1,0 +1,339 @@
+---
+title: 'Tarragona Measurements Preprocessing'
+author: "Tecla Duran Fort"
+date: "`r Sys.Date()`"
+output:
+  github_document: 
+    toc: yes
+    toc_depth: 3
+    number_sections: no 
+  html_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+---
+
+# Set Up
+
+```{r setup, message=FALSE, warning=FALSE}
+start_time <- Sys.time()
+library(BiocParallel)
+library(ggplot2)
+library(GCIMS)
+library(dplyr)
+library(openxlsx)
+library(htmlwidgets)
+library(rprojroot)
+knitr::opts_knit$set(root.dir = rprojroot::find_root(rprojroot::is_git_root))
+source("../../../load_tools.R")
+```
+
+
+```{r paralel, include=FALSE}
+# register(SerialParam(progressbar = show_progress_bar()), default = TRUE) # disable parallellization: (Useful for better error reporting)
+
+# enable parallellization
+register(SnowParam(workers = parallel::detectCores()/2, progressbar = show_progress_bar(), exportglobals = FALSE), default = TRUE)
+```
+
+
+**Result Storage**
+
+All results are automatically saved in a folder named with the current date and time, following the pattern `results_<YYYY-MM-DD_HH-MM>`. 
+
+```{r results-directory, echo=FALSE}
+# Prepare output directory with timestamp
+timestamp <- format(as.POSIXct(Sys.time(), tz = "Europe/Madrid"), "%Y-%m-%d_%H-%M")
+base_folder <- paste0("data/raw/campaign_22/", timestamp)
+dir.create(base_folder, showWarnings = FALSE)
+cat("The results will be saved in the folder: ", base_folder, "\n")
+```
+
+```{r annotations-file, echo=FALSE}
+# --- Old Campaign ---
+annotations_22 <- read.csv(
+  file.path("data/additional_files/tgn_additional_files/annotations_patient_measurements_22.csv")
+)
+
+annotations_22 <- annotations_22 %>%
+  filter(class != "blank", class != "M1") %>%    # treure blank i M1
+  filter(matrix == "urine") %>%                # només orina
+  dplyr::select(-control_level) %>%            # eliminar control_level (no hi ha pool)
+  mutate(campaign = "old")                      # afegir etiqueta campanya
+
+annotations_22
+```
+
+
+```{r annotations-file-2, echo=FALSE}
+# --- New Campaign ---
+annotations_new <- read.csv(
+  file.path("data/additional_files/tgn_additional_files/annotations_patient_measurements_tgn.csv")
+)
+
+annotations_new <- annotations_new %>%
+  filter(class != "blank", class != "M1") %>%   
+  mutate(campaign = "new") %>%
+  filter(matrix != "SU")
+annotations_new
+```
+
+```{r}
+# Join both annotation tables
+annotations_all <- dplyr::bind_rows(annotations_22, annotations_new)
+
+annotations_all
+
+```
+```{r}
+annotations<-annotations_all
+```
+
+## 1) Dataset creation
+
+```{r dataset-creation, echo=TRUE}
+samples_directory <- "/storage/projects/TargetML/all_campaigns_samples"
+FileName <- sort(list.files(samples_directory, full.names = FALSE))
+FileName
+
+# Create GCIMS dataset object
+df <- GCIMSDataset$new(
+  annotations_all,
+  base_dir = samples_directory,
+  on_ram = FALSE
+)
+df
+```
+
+---
+
+## 2) Pre-process
+
+```{r preprocess, echo=TRUE}
+# 1) Filter (only in Dt)
+filterDt(df, dt = c(5, 20)) # in ms
+
+# 2) Smooth
+smooth(df, rt_length_s = 3, dt_length_ms = 0.14)
+
+# 3) Decimate
+decimate(df, rt_factor = 1, dt_factor = 2)
+```
+
+---
+
+## Visualisation of some samples
+
+```{r plots-tgn-pool, echo=FALSE}
+for (i in 1:5){
+  plot_sample(df$getSample(i), colormap)
+}
+```
+
+```{r plots-tgn-pool, echo=FALSE}
+# Seleccionar sample_ids per campanya
+sample_ids_old <- annotations_all %>%
+  dplyr::filter(campaign == "old") %>%
+  dplyr::filter(class=="patient")%>%
+  dplyr::pull("SampleID") %>%
+  unique()
+
+sample_ids_new <- annotations_all %>%
+  dplyr::filter(campaign == "new") %>%
+  dplyr::pull("SampleID") %>%
+  unique()
+
+# Ens quedem amb com a màxim 5 de cada
+sample_ids_old_5 <- head(sample_ids_old, 5)
+sample_ids_new_5 <- head(sample_ids_new, 5)
+
+cat("Plotting 5 OLD campaign samples...\n")
+for (sid in sample_ids_old_5) {
+  cat("OLD sample:", sid, "\n")
+  plot_sample(df$getSample(sid), colormap)
+}
+
+cat("Plotting 5 NEW campaign samples...\n")
+for (sid in sample_ids_new_5) {
+  cat("NEW sample:", sid, "\n")
+  plot_sample(df$getSample(sid), colormap)
+}
+
+```
+
+---
+
+## 3) Pre-alignment
+
+```{r prealignment, echo=TRUE}
+reference <- 15
+align(df, reference_sample_idx = reference, align_dt = TRUE, align_ip = TRUE, method_rt = "none")
+df$realize()
+
+align(df, reference_sample_idx = reference, align_dt = FALSE, align_ip = FALSE, method_rt = "ptw", ploynomial_order = 2)
+df$realize()
+
+filterDt(df, dt_range = c(min(dtime(df)), max(dtime(df))))
+filterRt(df, rt_range = c(min(rtime(df)), max(rtime(df))))
+
+plot_interactive(plotRIC(df) + guides(colour = "none"))
+```
+```{r}
+plot_interactive(plotTIS(df)+guides(colour="none"))
+```
+
+---
+
+## 4) Alignment (not used)
+
+```{r alignment, echo=FALSE}
+#GCIMS::align_new_method(object = df, reference = 9, percentage_movement = 0.2)
+#plot_interactive(plotRIC(df)+guides(colour="none"))
+```
+
+
+```{r}
+#plot_interactive(plotTIS(df)+guides(colour="none"))
+```
+
+---
+
+## 5) findPeaks()
+
+```{r findPeaks, include=FALSE}
+findPeaks(
+  df,
+  rt_length_s = 3,
+  dt_length_ms = 0.14,
+  verbose = TRUE,
+  dt_peakwidth_range_ms = c(0.15, 0.4),
+  rt_peakwidth_range_s = c(10, 25),
+  dt_peakDetectionCWTParams = list(exclude0scaleAmpThresh = TRUE),
+  rt_peakDetectionCWTParams = list(exclude0scaleAmpThresh = TRUE),
+  dt_extension_factor = 0,
+  rt_extension_factor = 0,
+  exclude_rip = TRUE,
+  iou_overlap_threshold = 0.2
+)
+
+peak_list <- peaks(df)
+```
+
+---
+
+## 6) clusterPeaks()
+
+```{r clustering-section, echo=TRUE}
+peak_clustering <- clusterPeaks(
+  peak_list,
+  distance_method = "euclidean",
+  dt_cluster_spread_ms = 0.1,
+  rt_cluster_spread_s = 20,
+  clustering = list(method = "hclust")
+)
+
+peak_list_clustered <- peak_clustering$peak_list_clustered
+```
+
+---
+
+### Cluster Interactive Visualisation
+
+```{r plot-clustered-peaks, echo=FALSE}
+plt <- plot(df$getSample(1)) +
+  overlay_peaklist(dplyr::filter(peak_list_clustered, !is.na(cluster)), color_by = "cluster")
+plot_interactive(plt)
+saveWidget(plot_interactive(plt), file = file.path(base_folder, "cluster_plot_interactive.html"))
+```
+
+
+
+
+---
+
+## 7) integratePeaks()
+
+```{r integrate-peaks, echo=TRUE}
+integratePeaks(
+  df, 
+  peak_clustering$peak_list, 
+  integration_size_method = "fixed_size", 
+  rip_saturation_threshold = 0.1
+)
+
+peak_list <- peaks(df)
+```
+
+---
+
+## 8) peakTable()
+
+```{r peak-table, echo=TRUE}
+peak_table <- peakTable(peak_list, aggregate_conflicting_peaks = max)
+
+# Impute missing values
+peak_table_imputed <- imputePeakTable(
+  peak_table$peak_table_matrix,
+  df, 
+  peak_clustering$cluster_stats
+)
+```
+
+---
+
+## 9) Baseline Correction
+
+[Click here to view the Baseline Correction Report](https://github.com/tecladuran/gcims-workflows/blob/0f4be88606cd5b4de16762ad607b64fd4612b020/docs/baseline_correction.pdf)
+
+```{r correcting-baseline, echo=TRUE}
+cluster_stats <- peak_clustering$cluster_stats
+
+peak_table_corrected <- correctBaseline(
+  df, 
+  peak_list, 
+  cluster_stats, 
+  ampliation = 200
+)
+```
+
+---
+
+## 10) Saving all results
+
+```{r saving-results, echo=FALSE}
+# Create output folder structure
+all_results_folder <- file.path(base_folder, "all_results")
+dir.create(all_results_folder, recursive = TRUE, showWarnings = FALSE)
+
+# Save cluster stats
+write.csv(cluster_stats, file.path(all_results_folder, "cluster_stats_tgn_old_new.csv"), row.names = FALSE)
+write.xlsx(cluster_stats, file.path(all_results_folder, "cluster_stats_tgn_old_new.xlsx"))
+
+# Prepare and save imputed peak table
+peak_table_imputed_save <- as.data.frame(peak_table_imputed)%>%
+  rownames_to_column(var = "SampleID")%>%
+  left_join(annotations, by = "SampleID") %>%
+  dplyr::select(SampleID, class, matrix, patient_id, patient_condition, day, campaign, everything(), -FileName)
+
+write.csv(peak_table_imputed_save, file.path(all_results_folder, "peak_table_imputed_tgn_old_new.csv"), row.names = TRUE)
+write.xlsx(peak_table_imputed_save, file.path(all_results_folder, "peak_table_imputed_tgn_old_new.xlsx"))
+
+# Prepare and save corrected peak table
+peak_table_corrected_save <- as.data.frame(peak_table_corrected) %>%
+  mutate(SampleID = rownames(.)) %>%
+  left_join(annotations, by = "SampleID") %>%
+  dplyr::select(SampleID, class, matrix, patient_id, patient_condition, control_level, day, campaign, everything(), -FileName)
+
+write.csv(peak_table_corrected_save, file.path(all_results_folder, "peak_table_corrected_tgn_old_new.csv"), row.names = TRUE)
+write.xlsx(peak_table_corrected_save, file.path(all_results_folder, "peak_table_corrected_tgn_old_new.xlsx"))
+
+# Save peak table duplicity
+
+peak_table_duplicity <- peak_table$peak_table_duplicity
+write.csv(peak_table_duplicity, file.path(base_folder, "peak_table_duplicity.csv"), row.names = TRUE)
+
+```
+
+
+
+

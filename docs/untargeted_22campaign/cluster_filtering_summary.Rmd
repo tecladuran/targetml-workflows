@@ -1,0 +1,129 @@
+---
+title: "Cluster Filtering in Peak Table"
+subtitle: "Based on Representation Across Samples and Stability Across Quality Control Samples"
+author: "Tecla Duran Fort"
+date: "`r Sys.Date()`"
+output:
+  github_document:
+    toc: true
+    toc_depth: 3
+    number_sections: no
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: no
+  html_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(rprojroot)
+knitr::opts_knit$set(root.dir = rprojroot::find_root(rprojroot::is_git_root))
+source("../../load_tools.R")
+```
+
+
+```{r setup2, include=FALSE}
+root_folder <- "data/raw/campaign_22/"
+folders <- list.dirs(root_folder, full.names = TRUE, recursive = FALSE)
+results_folders <- folders[grepl("\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}", folders)]
+latest_folder <- sort(results_folders, decreasing = TRUE)[1]
+```
+
+# 0. Load Data
+
+```{r, echo=TRUE}
+data <- read.csv(file.path(latest_folder, "all_results/peak_table_corrected_tgn_old_new.csv"))
+
+peak_table_duplicity <- read_csv(file.path(latest_folder,"peak_table_duplicity.csv"))[ , -1]
+
+patient_data<-data%>%filter(matrix=="urine")%>%dplyr::select(-matrix,-control_level,-day)
+```
+
+
+```{r}
+cat("Data from (Latest Results Folder):", latest_folder, "\n\n")
+
+cat(
+  "data (peak_table_corrected_tgn_old_new.csv)\n",
+  "Rows:", nrow(data), " | Cols:", ncol(data), "\n",
+  "Description: Corrected peak table for all TGN samples.\n\n"
+)
+
+cat(
+  "peak_table_duplicity (peak_table_duplicity.csv)\n",
+  "Rows:", nrow(peak_table_duplicity), " | Cols:", ncol(peak_table_duplicity), "\n",
+  "Description: Duplicated peak information.\n\n"
+)
+
+cat(
+  "patient_data\n",
+  "Rows:", nrow(patient_data), " | Cols:", ncol(patient_data), "\n",
+  "Description: Only samples corresponding to patients.\n"
+)
+```
+
+
+# 1. Filter By Representation Across Samples
+
+```{r representation}
+# Convert to long format
+dup_long <- peak_table_duplicity %>%
+  pivot_longer(-cluster, names_to = "SampleID", values_to = "Presence") %>%
+  mutate(Presence = ifelse(is.na(Presence), 0, 1))
+
+# Representation ratio per cluster
+representation_df <- dup_long %>%
+  group_by(cluster) %>%
+  summarise(
+    n_present = sum(Presence),
+    total_samples = n(),
+    representation_ratio = n_present / total_samples,
+    .groups = "drop"
+  )
+
+cat("Data Frame of Representation\n")
+head(representation_df)
+```
+
+## Defining a threshold (20%)
+
+```{r rare-clusters, echo=TRUE}
+rare_clusters <- representation_df %>%
+  filter(representation_ratio < 0.2) %>%
+  pull(cluster)
+```
+
+```{r, echo=FALSE}
+
+cat("Number of rare clusters (Under 20% representation):", length(rare_clusters), "\n")
+```
+
+
+## Exclude them drom the datasets
+
+```{r, echo=TRUE}
+data_filtered <- data %>%
+  dplyr::select(-any_of(rare_clusters))
+
+peak_table_duplicity_filtered <- peak_table_duplicity %>%
+  dplyr::select(-any_of(rare_clusters))
+
+patient_data_filtered <- patient_data %>%
+  dplyr::select(-any_of(rare_clusters))
+```
+# Save
+```{r}
+write_csv(patient_data_filtered, "data/tables/22_campaign/patient_data_filtered.csv")
+```
+
+
+# 2. Filter By QC Stability
+
+(no esta fet perquè no hi ha QCs en pool a la campanya 22)

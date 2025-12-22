@@ -26,3 +26,19 @@ display_name <- function(x) {
     x
   }
 }
+
+get_x_cols <- function(df) {
+  x_cols <- df %>%
+    dplyr::select(where(is.numeric)) %>%
+    dplyr::select(-any_of(c("patient_id"))) %>%
+    colnames()
+  
+  x_cols
+}
+
+# Function to check normality (Shapiro)
+check_normal <- function(x) {
+  x <- x[!is.na(x)]
+  if (length(x) < 3) return(NA)
+  shapiro.test(x)$p.value
+} 

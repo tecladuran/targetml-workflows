@@ -1,86 +1,50 @@
----
-title: "Full Untargeted Analysis of Tarragona Samples"
-subtitle: "PLS-DA model with GC-IMS Data"
-author: "Tecla Duran Fort"
-date: "`r Sys.Date()`"
-output:
-  pdf_document:
-    toc: yes
-    toc_depth: 3
-    number_sections: yes
-  github_document:
-    toc: true
-    toc_depth: 3
-    number_sections: true
-  html_document:
-    toc: yes
-    toc_depth: 3
-    number_sections: yes
----
+Full Untargeted Analysis of Tarragona Samples
+================
+Tecla Duran Fort
+2025-12-22
 
-# Set Up 
+- <a href="#1-set-up" id="toc-1-set-up">1 Set Up</a>
+- <a href="#2-load-data" id="toc-2-load-data">2 Load Data</a>
+  - <a href="#21-loading-full-gcims-peak-table"
+    id="toc-21-loading-full-gcims-peak-table">2.1 Loading Full GCIMS Peak
+    table</a>
+- <a href="#3-preprocessing" id="toc-3-preprocessing">3 Preprocessing</a>
+  - <a href="#31-creatinine-normalisation"
+    id="toc-31-creatinine-normalisation">3.1 Creatinine Normalisation</a>
+  - <a href="#32-log-transformation" id="toc-32-log-transformation">3.2 Log
+    Transformation</a>
+- <a href="#4-exploratory-analysis" id="toc-4-exploratory-analysis">4
+  Exploratory Analysis</a>
+- <a href="#5-classification-performance"
+  id="toc-5-classification-performance">5 Classification Performance</a>
+  - <a href="#51-functions-definition" id="toc-51-functions-definition">5.1
+    Functions Definition</a>
+    - <a href="#511-make-stratified-folds"
+      id="toc-511-make-stratified-folds">5.1.1 Make Stratified Folds</a>
+    - <a href="#512-nested-cross-validation"
+      id="toc-512-nested-cross-validation">5.1.2 Nested Cross Validation</a>
+  - <a href="#52-evaluation" id="toc-52-evaluation">5.2 Evaluation</a>
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
-library(ggplot2)
-library(pls)
-library(plsVarSel)
-library(dplyr)
-library(pROC)
-library(tidyverse)
-library(purrr)
-library(rprojroot)
-knitr::opts_knit$set(root.dir = rprojroot::find_root(rprojroot::is_git_root))
-source("../../load_tools.R")
-```
+# 1 Set Up
 
-```{r, echo=FALSE}
-# PARALLELISATION 
+# 2 Load Data
 
-library(BiocParallel)
+## 2.1 Loading Full GCIMS Peak table
 
-# Detecta nombre total de cores disponibles
-n_total <- parallel::detectCores()
+The loaded dataset contains only the **patient samples** and has already
+been [filtered based on cluster representation and RSD]()
 
-# Deixa 4 cores lliures per seguretat
-n_workers <- max(1, n_total - 4)
-
-message("Detected cores: ", n_total)
-message("Using workers:  ", n_workers)
-
-# Linux/macOS → Multicore
-if (.Platform$OS.type == "unix") {
-    param <- MulticoreParam(workers = n_workers)
-} else {
-    # Windows → Snow
-    param <- SnowParam(workers = n_workers, type = "SOCK")
-}
-
-register(param)
-
-```
-
-\newpage
-
-# Load Data
-
-## Loading Full GCIMS Peak table 
-
-The loaded dataset contains only the **patient samples** and has already been [filtered based on cluster representation and RSD]()
-
-
-```{r}
+``` r
 data <- read_csv("data/tables/tgn_gcims/peak_table_filtered_patients.csv")
 creatinine<- read_csv("data/tables/tgn/creatinine.csv") 
 cluster_cols <- grep("^Cluster", names(data), value = TRUE)
 ```
 
-# Preprocessing
+# 3 Preprocessing
 
+## 3.1 Creatinine Normalisation
 
-## Creatinine Normalisation
-
-```{r}
+``` r
 creatinine <- creatinine %>%
   slice(1:(n() - 2)) %>%          # (two last not corresponding to patients)
   mutate(ID = as.numeric(ID))%>%
@@ -91,130 +55,23 @@ df <- data %>%
   left_join(creatinine, by = c("patient_id" = "ID"))
 ```
 
-```{r}
+``` r
 # Normalise cluster intensities by creatinine
 df_creatinine_norm <- df %>%
   mutate(across(all_of(cluster_cols), ~ .x / Creatinine))
 ```
 
-## Log Transformation 
+## 3.2 Log Transformation
 
-```{r, echo=TRUE}
+``` r
 # ---- LOG-TRANSFORM ----
 data_log <- df_creatinine_norm
 data_log[cluster_cols] <- log1p(data_log[cluster_cols])
-
 ```
 
+# 4 Exploratory Analysis
 
-
-## Check of Preprocessing (Normality)
-
-
-```{r, echo=FALSE}
-conditions <- unique(data$patient_condition)
-
-# Function to check normality (Shapiro)
-check_normal <- function(x) {
-  x <- x[!is.na(x)]
-  if (length(x) < 3) return(NA)
-  shapiro.test(x)$p.value
-}
-
-# ---- NORMALITY IN RAW DATA ----
-p_before <- purrr::map(cluster_cols, function(cl) {
-  purrr::map_dbl(conditions, function(cond) {
-    vals <- data[data$patient_condition == cond, cl, drop = TRUE]
-    check_normal(vals)
-  })
-}) %>% unlist()
-
-normal_before <- mean(p_before > 0.05, na.rm = TRUE) * 100
-
-# ---- NORMALITY AFTER Creatinine ----
-p_after_creat <- purrr::map(cluster_cols, function(cl) {
-  map_dbl(conditions, function(cond) {
-    vals <- df_creatinine_norm[df_creatinine_norm$patient_condition == cond, cl, drop = TRUE]
-    check_normal(vals)
-  })
-}) %>% unlist()
-
-normal_after_creat <- mean(p_after_creat > 0.05, na.rm = TRUE) * 100
-
-
-# ---- NORMALITY AFTER LOG ----
-p_after_log <- purrr::map(cluster_cols, function(cl) {
-  purrr::map_dbl(conditions, function(cond) {
-    vals <- data_log[data_log$patient_condition == cond, cl, drop = TRUE]
-    check_normal(vals)
-  })
-}) %>% unlist()
-
-normal_after_log <- mean(p_after_log > 0.05, na.rm = TRUE) * 100
-
-
-
-# ---- SUMMARY OUTPUT ----
-cat("Normality (Shapiro p > 0.05), computed separately per condition:\n")
-cat(sprintf("  • Raw data: %.1f%% of cases approximately normal\n", normal_before))
-cat(sprintf("  • After Creatinine Normalisation:  %.1f%% of cases approximately normal\n",  normal_after_creat))
-cat(sprintf("  • After log-transform:  %.1f%% of cases approximately normal\n",  normal_after_log))
-
-```
-
-
-
-```{r, fig.height=3, fig.width=10}
-## Evolution of 10 random clusters: histogram + density (count), 3 subplots per cluster
-
-library(dplyr)
-library(ggplot2)
-library(purrr)
-library(patchwork)
-
-# Pick 10 clusters
-set.seed(123)
-clusters_sampled <- sample(cluster_cols, 10)
-
-# Colors
-cond_cols <- c("CTRL" = "steelblue", "CRC" = "firebrick")
-
-# Function to build one subplot (RAW or LOG or CREAT)
-make_panel <- function(df, cl, title_suffix) {
-  ggplot(df, aes(x = .data[[cl]], fill = patient_condition)) +
-    geom_histogram(alpha = 0.5, bins = 10, position = "identity") +
-    geom_freqpoly(aes(color = patient_condition), bins = 10, size = 1)+
-    scale_fill_manual(values = cond_cols) +
-    scale_color_manual(values = cond_cols) +
-    theme_minimal(base_size = 12) +
-    theme(legend.position = "none") +
-    labs(title = title_suffix, x = NULL, y = "Count")
-}
-
-# Build all cluster evolution plots
-evolution_plots <- lapply(clusters_sampled, function(cl){
-
-  p_raw  <- make_panel(data, cl,        "Raw")
-  p_crea <- make_panel(df_creatinine_norm, cl, "Creatinine")
-  p_log  <- make_panel(data_log, cl,    "Log")
-
-  # 3 panels in a row
-  (p_raw | p_log | p_crea) +
-    plot_annotation(title = paste("Cluster:", cl))
-})
-
-# Show all
-evolution_plots
-
-
-
-```
-
-
-# Exploratory Analysis
-
-
-```{r}
+``` r
 # Simple PCA score plot function
 plot_pca <- function(data, labels, levels, colors) {
   
@@ -239,10 +96,9 @@ plot_pca <- function(data, labels, levels, colors) {
     theme_minimal(base_size = 14) +
     labs(title = "PCA Score Plot", x = "PC1", y = "PC2")
 }
-
 ```
 
-```{r}
+``` r
 group_labels <- df_creatinine_norm$patient_condition
 group_levels <- c("CTRL", "CRC")
 group_colors <- c("CTRL" = "#337B9F", "CRC" = "#C83342")
@@ -252,13 +108,15 @@ p <- plot_pca(data_log, group_labels, group_levels, group_colors)
 print(p)
 ```
 
-# Classification Performance
+![](tgn_untargeted_creatinine_files/figure-gfm/unnamed-chunk-7-1.png)<!-- -->
 
-## Functions Definition
+# 5 Classification Performance
 
-### Make Stratified Folds
+## 5.1 Functions Definition
 
-```{r}
+### 5.1.1 Make Stratified Folds
+
+``` r
 make_folds <- function(..., k) {
   set.seed(1)
   folds <- vector("list", k)
@@ -287,8 +145,9 @@ make_folds <- function(..., k) {
 }
 ```
 
-### Nested Cross Validation
-```{r}
+### 5.1.2 Nested Cross Validation
+
+``` r
 rf_nested_cv <- function(X, y, positive_class, negative_class,
                          outer_folds = 5, inner_folds = 4,
                          ntree = 500, mtry_grid = c(2, 4, 6),
@@ -402,23 +261,19 @@ rf_nested_cv <- function(X, y, positive_class, negative_class,
     overall_accuracy = overall_acc
   )
 }
-
 ```
 
-## Evaluation
+## 5.2 Evaluation
 
-
-```{r}
+``` r
 # Predictor matrix
 X <- data_log[, cluster_cols] %>% as.matrix()
 
 # Response variable
 y <- data_log$patient_condition
-
 ```
 
-
-```{r}
+``` r
 set.seed(123)
 
 rf_res <- rf_nested_cv(
@@ -434,8 +289,22 @@ rf_res <- rf_nested_cv(
 )
 ```
 
-```{r}
-show_results(rf_res, title = "Random Forest Nested CV — GC-IMS Classification")
+    ##   |                                                                              |                                                                      |   0%  |                                                                              |==========                                                            |  14%  |                                                                              |====================                                                  |  29%  |                                                                              |==============================                                        |  43%  |                                                                              |========================================                              |  57%  |                                                                              |==================================================                    |  71%  |                                                                              |============================================================          |  86%  |                                                                              |======================================================================| 100%
 
+``` r
+show_results(rf_res, title = "Random Forest Nested CV — GC-IMS Classification")
 ```
 
+    ## ### Random Forest Nested CV — GC-IMS Classification 
+    ## Overall Leave-One-Out Accuracy: 0.533 
+    ## 
+    ## 
+    ## 
+    ## Table: Global Confusion Matrix (Aggregated Across All LOO Iterations).
+    ## 
+    ## |   |  0|  1|
+    ## |:--|--:|--:|
+    ## |0  |  8|  7|
+    ## |1  |  7|  8|
+
+![](tgn_untargeted_creatinine_files/figure-gfm/unnamed-chunk-12-1.png)<!-- -->
