@@ -31,7 +31,7 @@ This directory contains methodological reports, analyses, and documented results
 2. Use the tables in `data/` as inputs or outputs of the workflows.
 3. Refer to the documents in `docs/` for detailed explanations and interpretation of results.
 
-All scripts source the functions in `R/` and use the data stored in `data/`.  
+All scripts source the functions in `R/` and use the data stored in `data/`.
 All paths are defined as relative paths, so the workflows can be executed directly after cloning the repository without requiring any path modification.
 ---
 
