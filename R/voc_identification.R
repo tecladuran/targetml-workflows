@@ -1,3 +1,24 @@
+# identification.R — Target VOC Identification and Manual Curation Utilities
+#
+# This script provides utilities for identifying target volatile organic compounds (VOCs)
+# in GC-IMS data by matching expected drift time (DT) and retention time (RT) values to
+# detected clusters.
+#
+# VOC-to-cluster assignment is performed using a distance-based criterion in the
+# DT–RT space, with configurable weighting to control the relative importance of drift
+# time versus retention time. Each match is flagged according to its reliability based
+# on a user-defined distance threshold.
+#
+# The workflow is designed to be semi-automatic: unreliable matches are reported to the
+# user, while helper functions are provided to manually correct or remove VOC assignments
+# when necessary. This enables transparent and reproducible target identification while
+# retaining expert control.
+#
+# The main entry point is `identify_target_vocs()`, which returns a curated mapping between
+# target VOCs and GC-IMS clusters together with reliability annotations.
+
+
+
 #' Identify target VOCs from cluster stats with reliability warning
 #'
 #' @param cluster_stats Dataframe with detected clusters. Must contain columns: cluster, dt_apex_ms, rt_apex_s.

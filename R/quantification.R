@@ -1,3 +1,26 @@
+# quantification.R — GC-IMS Quantification and Calibration Utilities
+#
+# This script implements utilities for the quantification of GC-IMS signals based on
+# external calibration data. The workflow is designed to estimate analyte concentrations
+# from measured peak intensities using calibrated reference curves and optional scaling
+# and offset correction.
+#
+# The quantification strategy includes:
+# - Interpolation of concentrations from calibration curves within the valid intensity range.
+# - Estimation of scale and offset parameters to align target datasets to a reference.
+# - Polynomial calibration modeling to map concentration–intensity relationships.
+# - Robust handling of missing analytes and flexible analyte-to-peak mapping.
+#
+# The main entry point is `quantify_gcims()`, which applies the full quantification pipeline
+# starting from a reference calibration dataset and a GC-IMS peak table.
+#
+# Additional utilities are provided to support error analysis and variance estimation.
+#
+# Typical usage:
+#   quantified_table <- quantify_gcims(ref, analytes, scales, peak_table)
+
+
+
 interpolate_concentration <- function(intensity, calibration_intensity, calibration_concentration) {
   # extreure els límits del calibratge
   min_int <- min(calibration_intensity, na.rm = TRUE)

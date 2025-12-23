@@ -1,5 +1,52 @@
 # baseline.R — GC-IMS Baseline Correction Functions
 
+
+# Cluster-based baseline correction for GC-IMS peak tables based on residual volume
+# estimation within fixed-size peak regions. The correction subtracts low-intensity
+# background contributions from integrated peak intensities to improve robustness
+# and downstream analysis reliability.
+
+
+
+#' Apply full baseline correction pipeline to a GC-IMS dataset
+#'
+#' This function performs baseline correction by:
+#' 1. Adding fixed-size area to the peak list
+#' 2. Estimating baseline using intensity quantiles
+#' 3. Computing residual volumes per peak region
+#' 4. Imputing missing values in the peak table
+#' 5. Subtracting baseline volume from the peak table
+#'
+#' @param dataset GCIMSDataset object
+#' @param peak_list Peak list with fixedsize limits and cluster assignments
+#' @param cluster_stats Data frame with cluster-level fallback info
+#' @param ampliation Expansion percentage used to estimate the baseline (default = 200)
+#'
+#' @return Baseline-corrected peak table as a data frame
+#' @export
+correctBaseline <- function(dataset, peak_list, cluster_stats, ampliation = 200) {
+  peak_list <- addFixedSizeArea(peak_list)
+  peak_list <- extractMinValues(dataset, peak_list, ampliation = ampliation)
+  
+  residual_volume_df <- computeResidualVolume(
+    dataset = dataset,
+    peak_list = peak_list,
+    cluster_stats = cluster_stats,
+    ampliation = ampliation
+  )
+  
+  imputed_matrix <- imputePeakTable(
+    peakTable(peak_list, aggregate_conflicting_peaks = max)$peak_table_matrix,
+    dataset,
+    cluster_stats
+  )
+  
+  corrected_table <- as.data.frame(imputed_matrix) - t(residual_volume_df)
+  
+  return(corrected_table)
+}
+
+
 #' Add fixed-size area to the peak list
 #'
 #' Computes the fixed-size area of each peak based on its RT and DT range
@@ -111,41 +158,3 @@ computeResidualVolume <- function(dataset, peak_list, cluster_stats, ampliation 
   return(as.data.frame(residual_volume_table))
 }
 
-
-#' Apply full baseline correction pipeline to a GC-IMS dataset
-#'
-#' This function performs baseline correction by:
-#' 1. Adding fixed-size area to the peak list
-#' 2. Estimating baseline using intensity quantiles
-#' 3. Computing residual volumes per peak region
-#' 4. Imputing missing values in the peak table
-#' 5. Subtracting baseline volume from the peak table
-#'
-#' @param dataset GCIMSDataset object
-#' @param peak_list Peak list with fixedsize limits and cluster assignments
-#' @param cluster_stats Data frame with cluster-level fallback info
-#' @param ampliation Expansion percentage used to estimate the baseline (default = 200)
-#'
-#' @return Baseline-corrected peak table as a data frame
-#' @export
-correctBaseline <- function(dataset, peak_list, cluster_stats, ampliation = 200) {
-  peak_list <- addFixedSizeArea(peak_list)
-  peak_list <- extractMinValues(dataset, peak_list, ampliation = ampliation)
-
-  residual_volume_df <- computeResidualVolume(
-    dataset = dataset,
-    peak_list = peak_list,
-    cluster_stats = cluster_stats,
-    ampliation = ampliation
-  )
-
-  imputed_matrix <- imputePeakTable(
-    peakTable(peak_list, aggregate_conflicting_peaks = max)$peak_table_matrix,
-    dataset,
-    cluster_stats
-  )
-
-  corrected_table <- as.data.frame(imputed_matrix) - t(residual_volume_df)
-
-  return(corrected_table)
-}

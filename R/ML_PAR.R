@@ -1,3 +1,10 @@
+# Stratified Nested Cross-Validation Utilities
+
+# Parallelized nested cross-validation workflows for PLS-DA and Random Forest models,
+# including optional recursive feature elimination (RFE) and stratified fold creation.
+# Designed for robust performance evaluation in high-dimensional GC-IMS analyses.
+
+
 library(BiocParallel)
 
 # MAKE STRATIFIED FOLDS -------------------------------------------------------
