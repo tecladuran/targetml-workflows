@@ -368,7 +368,6 @@ df <- df %>%
   )
 ```
 
-
 ```{r}
 # Construct predictor matrix X
 # (remove response variable and ID if needed)
@@ -378,6 +377,8 @@ X <- df %>%
 # Response variable
 y <- patient_condition%>% as.matrix()
 ```
+
+
 
 
 ## Evaluation

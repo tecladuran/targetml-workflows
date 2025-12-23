@@ -1,0 +1,461 @@
+---
+title: "Full Untargeted Analysis of Tarragona Samples"
+subtitle: "PLS-DA model with GC-IMS Data"
+author: "Tecla Duran Fort"
+date: "`r Sys.Date()`"
+output:
+  github_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+  html_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+---
+
+# Set Up 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(ggplot2)
+library(pls)
+library(plsVarSel)
+library(dplyr)
+library(pROC)
+library(tidyverse)
+library(purrr)
+library(rprojroot)
+knitr::opts_knit$set(root.dir = rprojroot::find_root(rprojroot::is_git_root))
+source("../../../load_tools.R")
+```
+
+```{r, echo=FALSE}
+# PARALLELISATION 
+
+library(BiocParallel)
+
+# Detecta nombre total de cores disponibles
+n_total <- parallel::detectCores()
+
+# Deixa 4 cores lliures per seguretat
+n_workers <- max(1, n_total - 4)
+
+message("Detected cores: ", n_total)
+message("Using workers:  ", n_workers)
+
+# Linux/macOS → Multicore
+if (.Platform$OS.type == "unix") {
+    param <- MulticoreParam(workers = n_workers)
+} else {
+    # Windows → Snow
+    param <- SnowParam(workers = n_workers, type = "SOCK")
+}
+
+register(param)
+
+```
+
+\newpage
+
+# Load Data
+
+## Loading Full GCIMS Peak table 
+
+The loaded dataset contains only the **patient samples** and has already been [filtered based on cluster representation and RSD](https://github.com/tecladuran/targetml-workflows/blob/main/docs/measurements_tarragona/cluster_filtering_summary.md)
+
+
+```{r}
+data <- read_csv("data/tables/tgn_gcims/peak_table_filtered_all_samples.csv")
+data_patients <- data%>%filter(matrix=="urine")%>%dplyr::select(-matrix,-control_level,-day)
+
+metadata <- read_csv("data/tables/tgn/tgn_metadata.csv")
+
+cluster_cols <- grep("^Cluster", names(data), value = TRUE)
+```
+
+# Preprocessing
+
+## PQN Normalization
+
+### Reference spectrum computation
+
+A reference spectrum is required for PQN normalization.  
+Here, the **median spectrum of all control samples** is used as reference.  
+
+The **target analytes** (Anisole, 2-Heptanone (Monomer, Dimer), 2-Pentanone (Monomer, Dimer)) are intentionally excluded because the QC samples include **different concentration levels of these compounds**.  
+The identification of these target analytes is detailed in the following document:  
+[Identification of Target Analytes – Tarragona Urine Measurements](https://github.com/tecladuran/targetml-workflows/blob/main/docs/measurements_tarragona/preprocessing/identification/identification_tgn_urine.md)
+
+
+```{r}
+# Clusters corresponding to target analytes
+excluded_clusters <- c(3, 155, 310, 39, 236)
+excluded_names <- paste0("Cluster", excluded_clusters)
+
+# Compute the reference (median) spectrum using control samples only
+ref_spectrum <- data %>%
+  filter(class == "control") %>%
+  select(starts_with("Cluster")) %>%
+  select(-any_of(excluded_names)) %>%
+  summarise(across(everything(), median, na.rm = TRUE)) %>%
+  as.numeric()
+
+# Assign column names to the numeric vector for later reference
+names(ref_spectrum) <- colnames(
+  data %>%
+    select(starts_with("Cluster")) %>%
+    select(-any_of(excluded_names))
+)
+
+```
+
+```{r plot-spectrum, echo=FALSE}
+df_plot <- data.frame(
+  index = seq_along(ref_spectrum),
+  cluster  = rownames(as.data.frame(ref_spectrum)),
+  value = ref_spectrum
+)
+
+ggplot(df_plot, aes(x = index, y = value)) +
+  geom_line(linewidth = 0.2) +
+  geom_point(size=0.5) +
+  ggtitle("PQN Reference Spectrum") +
+  theme(
+    axis.text.x  = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+
+
+```
+
+### Normalization 
+
+The **Probabilistic Quotient Normalization (PQN)** corrects for dilution or total intensity differences between samples.
+For each sample:
+
+1. The quotient between its spectrum and the reference spectrum is computed.
+2. The **median of the quotients** gives the normalization factor *f*.
+3. All intensities in that sample are divided by *f*.
+
+```{r}
+data_pqn <- data %>%
+  mutate(across(starts_with("Cluster"), as.numeric)) %>%
+  group_split(row_number()) %>%                     # Split into individual samples
+  map_dfr(function(row_df) {
+    # Extract numeric cluster values for the current sample
+    x <- as.numeric(row_df %>%
+                      select(starts_with("Cluster")) %>%
+                      select(-any_of(excluded_names)))
+    
+    # Compute the ratio between sample and reference spectrum
+    quotients <- x / ref_spectrum
+    quotients <- quotients[is.finite(quotients)]    # Remove non-finite values
+    
+    # Median of quotients = normalization factor
+    f <- median(quotients, na.rm = TRUE)
+    
+    # Apply normalization and store the factor
+    row_df %>%
+      mutate(across(starts_with("Cluster"), ~ .x / f),
+             PQN_factor = f)
+  })
+```
+
+### PQN Factor Distribution
+
+To check the normalization behaviour, the distribution of PQN factors across classes is visualized.
+
+```{r plot-factor, echo=FALSE}
+ggplot(data_pqn, aes(x = class, y = PQN_factor, fill = class)) +
+  geom_boxplot(alpha = 0.8, color = "grey30") +
+  geom_jitter(width = 0.15, alpha = 0.4) +
+  labs(
+    title = "PQN normalization factors by sample class",
+    x = "Class",
+    y = "Normalization factor"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "none")
+```
+```{r df, echo=FALSE}
+df_norm <- data_pqn%>%filter(matrix=="urine")%>%dplyr::select(-matrix,-control_level,-day,-PQN_factor, -`row_number()`)
+```
+
+
+## Log Transformation 
+
+```{r, echo=TRUE}
+# ---- LOG-TRANSFORM ----
+data_log <- df_norm
+data_log[cluster_cols] <- log1p(data_log[cluster_cols])
+```
+
+
+# Exploratory Analysis
+
+
+```{r}
+# Simple PCA score plot function
+plot_pca <- function(data, labels, levels, colors) {
+  
+  # Select only cluster columns (numerical features)
+  features <- data[, grepl("^Cluster", colnames(data))]
+  
+  # Run PCA
+  pca_res <- prcomp(features, scale. = TRUE)
+  
+  # Build score dataframe
+  scores <- as.data.frame(pca_res$x[, 1:2])   # PC1 + PC2
+  scores$label <- factor(labels, levels = levels)
+  
+  # Simple shapes for the two groups
+  shapes <- c(16, 17)   # circle, triangle
+  
+  # Score plot
+  ggplot(scores, aes(PC1, PC2, color = label, shape = label)) +
+    geom_point(size = 3, alpha = 0.8) +
+    scale_color_manual(values = colors) +
+    scale_shape_manual(values = shapes) +
+    theme_minimal(base_size = 14) +
+    labs(title = "PCA Score Plot", x = "PC1", y = "PC2")
+}
+
+```
+
+```{r}
+group_labels <- df_norm$patient_condition
+group_levels <- c("CTRL", "CRC")
+group_colors <- c("CTRL" = "#337B9F", "CRC" = "#C83342")
+
+p <- plot_pca(data_log, group_labels, group_levels, group_colors)
+
+print(p)
+```
+
+# Classification Performance
+
+## Functions Definition
+
+### Make Stratified Folds
+
+```{r}
+make_folds <- function(..., k) {
+  set.seed(1)
+  folds <- vector("list", k)
+  
+  # Capture all input variables as a data frame
+  vars <- list(...)
+  if (length(vars) == 0) stop("You must provide at least one variable for stratification.")
+  
+  # Combine all variables into one data frame
+  df <- as.data.frame(vars)
+  
+  # Create stratification factor (interaction between all variables)
+  strata <- interaction(df, drop = TRUE)
+  
+  # Create folds maintaining proportional representation of each stratum
+  for (lvl in levels(strata)) {
+    idx <- which(strata == lvl)
+    idx <- sample(idx)
+    split_idx <- cut(seq_along(idx), breaks = k, labels = FALSE)
+    for (i in 1:k) {
+      folds[[i]] <- c(folds[[i]], idx[split_idx == i])
+    }
+  }
+  
+  return(folds)
+}
+```
+
+### Nested Cross Validation
+```{r}
+rf_nested_cv_rfe <- function(X, y, positive_class, negative_class,
+                             outer_folds = 5, inner_folds = 4,
+                             ntree = 500, mtry_grid = c(2, 4, 6),
+                             drop_rate = 0.05, strat_vars = NULL) {
+  
+  library(randomForest)
+  
+  y <- factor(y, levels = c(negative_class, positive_class))
+  y_num <- ifelse(y == positive_class, 1, 0)
+  
+  if (is.null(strat_vars)) {
+    outer_folds_idx <- make_folds(y, k = outer_folds)
+  } else {
+    outer_folds_idx <- do.call(make_folds, c(list(y), strat_vars, k = outer_folds))
+  }
+  
+  results <- bplapply(seq_along(outer_folds_idx), function(o) {
+    
+    test_id <- outer_folds_idx[[o]]
+    train_id <- setdiff(seq_along(y), test_id)
+    
+    X_train <- X[train_id, , drop = FALSE]
+    y_train <- y[train_id]
+    X_test  <- X[test_id, , drop = FALSE]
+    y_test  <- y[test_id]
+    y_test_num <- y_num[test_id]
+    
+    features <- colnames(X_train)
+    best_acc <- 0
+    best_features <- features
+    best_mtry <- mtry_grid[1]
+    
+    internal_acc_history <- data.frame()
+    external_acc_history <- data.frame()
+    
+    repeat {
+      inner_idx <- make_folds(y_train, k = inner_folds)
+      acc_mat <- matrix(NA, nrow = inner_folds, ncol = length(mtry_grid))
+      
+      # --- Inner CV --------
+      for (f in seq_along(inner_idx)) {
+        val_id <- inner_idx[[f]]
+        tr_id <- setdiff(seq_along(y_train), val_id)
+        
+        Xi_tr <- X_train[tr_id, features, drop = FALSE]
+        yi_tr <- y_train[tr_id]
+        Xi_val <- X_train[val_id, features, drop = FALSE]
+        yi_val <- y_train[val_id]
+        
+        for (m in seq_along(mtry_grid)) {
+          model <- randomForest(
+            x = Xi_tr, y = yi_tr,
+            ntree = ntree, mtry = mtry_grid[m]
+          )
+          acc_mat[f, m] <- mean(predict(model, Xi_val) == yi_val)
+        }
+      }
+      
+      mean_acc <- colMeans(acc_mat, na.rm = TRUE)
+      opt_mtry <- mtry_grid[which.max(mean_acc)]
+      
+      internal_acc_history <- rbind(
+        internal_acc_history,
+        data.frame(Nfeatures = length(features), Accuracy = max(mean_acc))
+      )
+      
+      # Train full model 
+      model_full <- randomForest(
+        x = X_train[, features, drop = FALSE],
+        y = y_train,
+        ntree = ntree,
+        mtry = opt_mtry,
+        importance = TRUE
+      )
+      
+      preds_test <- predict(model_full, X_test[, features, drop = FALSE])
+      acc_ext <- mean(preds_test == y_test)
+      
+      external_acc_history <- rbind(
+        external_acc_history,
+        data.frame(Nfeatures = length(features), Accuracy = acc_ext)
+      )
+      
+      if (max(mean_acc) > best_acc) {
+        best_acc <- max(mean_acc)
+        best_features <- features
+        best_mtry <- opt_mtry
+      }
+      
+      if (length(features) <= 10) break
+      
+      # Feature elimination
+      imp <- importance(model_full, type = 2)[, 1]
+      imp <- sort(imp)
+      
+      drop_n <- max(1, ceiling(length(features) * drop_rate))
+      drop_feat <- names(imp)[1:drop_n]
+      
+      features <- setdiff(features, drop_feat)
+    }
+    
+    # Final model
+    final_model <- randomForest(
+      x = X_train[, best_features, drop = FALSE],
+      y = y_train,
+      ntree = ntree,
+      mtry = best_mtry
+    )
+    
+    test_prob <- predict(final_model, X_test[, best_features, drop = FALSE], type = "prob")[, 2]
+    test_class <- as.integer(test_prob > 0.5)
+    
+    predictions <- data.frame(
+      SampleIndex = test_id,
+      TrueLabel = y_test_num,
+      PredProb = test_prob,
+      PredClass = test_class
+    )
+    
+    list(
+      best_mtry = best_mtry,
+      best_features = best_features,
+      internal_acc_history = internal_acc_history,
+      external_acc_history = external_acc_history,
+      predictions = predictions
+    )
+  })
+  
+  # Global predictions
+  preds_all <- do.call(rbind, lapply(results, function(z) z$predictions))
+  overall_acc <- mean(preds_all$TrueLabel == preds_all$PredClass)
+  
+  return(list(
+    results = results,
+    predictions = preds_all,
+    overall_accuracy = overall_acc
+  ))
+}
+
+```
+
+
+
+## Adding Metadata as Predictors
+
+```{r}
+# Add Metadata in the predictor matrix
+df <- data_log %>%
+  left_join(metadata, by = "patient_id")
+
+#Code sex
+df <- df %>%
+  mutate(
+    sex = ifelse(sex == "F", 0, 1)
+  )
+```
+
+## Evaluation
+
+```{r}
+# Predictor matrix
+X <- df[, c(cluster_cols, "sex", "bmi", "age")] %>% as.matrix()
+
+# Response variable
+y <- data_log$patient_condition
+```
+
+```{r}
+set.seed(123)
+
+rf_res <- rf_nested_cv_rfe(
+  X = X,
+  y = y,
+  positive_class = "CRC",
+  negative_class = "CTRL",
+  outer_folds = 7,
+  inner_folds = 6,
+  strat_vars = df$sex
+)
+```
+
+```{r}
+show_results(rf_res, title = "Random Forest Nested CV — GC-IMS Classification")
+```
+

@@ -19,7 +19,9 @@ library(GCIMS)
 library(dplyr)
 library(openxlsx)
 library(htmlwidgets)
-source("../../../load_targetml_tools.R")
+library(rprojroot)
+knitr::opts_knit$set(root.dir = rprojroot::find_root(rprojroot::is_git_root))
+source("../../../load_tools.R")
 ```
 
 
@@ -38,14 +40,29 @@ All results are automatically saved in a folder named with the current date and 
 ```{r results-directory, echo=FALSE}
 # Prepare output directory with timestamp
 timestamp <- format(as.POSIXct(Sys.time(), tz = "Europe/Madrid"), "%Y-%m-%d_%H-%M")
-base_folder <- paste0("/storage/users/tduran/Projects/targetml-gcims-tools/data/tgn_results/measurements/su/results_", timestamp)
-dir.create(base_folder, showWarnings = FALSE)
+base_folder <- file.path(
+  "data",
+  "raw",
+  "tgn_results_gcims", 
+  "su",
+  paste0("results_", timestamp)
+)
+
+dir.create(base_folder)
 cat("The results will be saved in the folder: ", base_folder, "\n")
 ```
 
 ```{r annotations-file, echo=FALSE}
 # Create annotations df
-annotations <- read.csv(file.path("/storage/users/tduran/Projects/targetml-gcims-tools/data/tgn_additional_files/annotations_patient_measurements_tgn.csv"))
+annotations <- read.csv(
+  file.path(
+    "data",
+    "additional_files",
+    "tgn_additional_files",
+    "annotations_patient_measurements_tgn.csv"
+  )
+)
+
 annotations <- annotations %>% filter(class != "blank") %>% filter(class != "M1")%>%filter(matrix == "SU") # QUITAR FILAS BLANK, m1, SU
 annotations
 ```
